@@ -31,7 +31,8 @@ setup(
             "brick_assemble=rokey.advance.brick:main",
             "stacking=rokey.advance.stacking:main",
             "pick_place=rokey.basic.pick_place:main",
-            "geer=rokey.basic.geer:main"
+            "geer=rokey.basic.geer:main",
+            "main=rokey.basic.main:main",
         ],
     },
 )
