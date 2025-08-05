@@ -1,7 +1,7 @@
 import rclpy
 import DR_init
 
-# for single robot
+# 기본 설정
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
 VELOCITY, ACC = 40, 40
@@ -9,203 +9,152 @@ DR_init.__dsr__id = ROBOT_ID
 DR_init.__dsr__model = ROBOT_MODEL
 
 rclpy.init()
-node = rclpy.create_node("rokey_stacking", namespace=ROBOT_ID)
+node = rclpy.create_node("box_grip_release", namespace=ROBOT_ID)
 DR_init.__dsr__node = node
 
+from DSR_ROBOT2 import movej, movel, mwait, get_current_posx, set_digital_output, wait
+
 ON, OFF = 1, 0
-HOME_READY = [0, 0, 90, 0, 90, 0]
 
-import time
 
-try:
-    from DSR_ROBOT2 import (
-        get_digital_input,
-        set_digital_output,
-        get_current_posx,
-        trans,
-        set_tool,
-        set_tcp,
-        movej,
-        movel,
-        wait,
-        mwait,
-        task_compliance_ctrl,
-        release_compliance_ctrl,
-        set_desired_force,
-        release_force,
-        check_force_condition,
-        DR_FC_MOD_REL,
-        DR_AXIS_Z,
-    )
-except ImportError as e:
-    print(f"Error importing DSR_ROBOT2 : {e}")
-    exit()
-
-set_tool("Tool Weight_2FG")
-set_tcp("2FG_TCP")
-
-def wait_digital_input(sig_num):
-    while not get_digital_input(sig_num):
-        wait(0.5)
-        print("Wait for digital input")
-        pass
+# ====== 그립/릴리즈 ======
+def grip():
+    set_digital_output(1, OFF)
+    set_digital_output(2, ON)
+    wait(1)
 
 def release():
     set_digital_output(2, ON)
-    set_digital_output(1, OFF)
-    wait_digital_input(2)
-
-def grip():
     set_digital_output(1, ON)
-    set_digital_output(2, OFF)
-    wait_digital_input(1)
+    wait(1)
 
 
+# ====== Box 클래스 ======
 class Box:
-    def __init__(self, id, pos_id, position):
-        self.id = id
-        self.pos_id = pos_id
-        self.position = position
-        self.target_offset = 100
-        self.stacked = False
+    def __init__(self, box_id, position_id, target_commands):
+        self.box_id = box_id
+        self.position_id = position_id
+        self.target_commands = target_commands  # list of dicts
 
-    def set_pos_id(self, pos_id):
-        self.pos_id = pos_id
-
-    def set_box_id(self, id):
-        self.id = id
-    
-    def set_position(self, pos_list):
-        self.position = pos_list
-    
     def info(self):
-        return f"id : {self.id}\nposition : {self.pos_id} -> {self.position}\n=====\n"
+        info_text = f"\n[Box: {self.box_id}] Position ID: {self.position_id}\n"
+        for i, cmd in enumerate(self.target_commands):
+            info_text += f"  {i+1}: ({cmd['type']}) {cmd['pose']}\n"
+        return info_text
 
-    def __move_to_pos(self, target_pos, action = None):
-        init_pos = get_current_posx()[0]
-        time.sleep(1)
-        print(init_pos)
-        ready_pos = init_pos.copy()
-        ready_pos[2] = 350
-        print(ready_pos)
-        movel(ready_pos, vel=VELOCITY, acc=ACC, mod=0)
-        mwait()
-        movel(target_pos, vel=VELOCITY, acc=ACC, mod=0)
-        print(target_pos)
-        mwait()
-        if action == 'grip':
-            grip()
-            mwait()
-        elif action == 'release':
-            release()
-            mwait()
-        movel(ready_pos, vel=VELOCITY, acc=ACC, mod=0)
-        movej(HOME_READY, vel=VELOCITY, acc=ACC)
-        return target_pos
 
-    def stack(self):
-        if self.stacked:
-            print(f"Box {self.id} is already stacked!")
-            return
-        if not self.position:
-            print("No position set for stacking.")
-            return
-        self.__move_to_pos(self.position, action='release')
-        self.stacked=True
+# ====== 이동 함수 ======
+def move_to_pose(command):
+    move_type = command["type"]
+    pose = command["pose"]
+    print(f"🔵 {move_type.upper()} 이동 중: {pose}")
+    if move_type == "movej":
+        movej(pose, vel=VELOCITY, acc=ACC)
+    elif move_type == "movel":
+        movel(pose, vel=VELOCITY, acc=ACC)
+    else:
+        print(f"❌ 알 수 없는 move type: {move_type}")
+        return
+    mwait()
 
-    def unstack(self):
-        if not self.stacked:
-            print(f"Box {self.id} is already unstacked!")
-            return
-        if not self.position:
-            print("No position set for stacking.")
-            return
-        self.__move_to_pos(self.position, action='grip')
-        self.stacked = False
-
-def to_grip():
-    movej(HOME_READY, vel=VELOCITY, acc=ACC)
+def grip_and_place(pick_cmd, place_cmd):
+    move_to_pose(pick_cmd)
     grip()
     mwait()
-    movel([0,0,-100,0,0,0], vel=VELOCITY, acc=ACC, mod=1)
-    task_compliance_ctrl(stx=[500, 500, 500, 100, 100, 100])
-    time.sleep(1)
-    set_desired_force(fd=[0, 0, -10, 0, 0, 0], dir=[0, 0, 1, 0, 0, 0], mod=DR_FC_MOD_REL)
-    while not check_force_condition(DR_AXIS_Z, max=5):
-        pass
-    print("end force control")
-    release_force()
-    release_compliance_ctrl()
-    time.sleep(1)
-    movel([0,0,20,0,0,0], vel=VELOCITY, acc=ACC, mod=1)
+    move_to_pose(place_cmd)
     release()
-    movel([0,0,-35,0,0,0], vel=VELOCITY, acc=ACC, mod=1)
-    grip()
-    movej(HOME_READY, vel=VELOCITY, acc=ACC)
+    mwait()
+    print("✅ 그립 → 이동 → 릴리즈 완료")
+
+def restore_positions(box: Box):
+    cmds = box.target_commands
+    if len(cmds) < 2:
+        print("❌ 최소 2개 이상의 위치가 필요합니다.")
+        return
+    print(f"🔁 {box.box_id} 복구 시작 (역순으로)")
+    for i in range(len(cmds) - 1, 0, -1):
+        pick = cmds[i]
+        place = cmds[i - 1]
+        print(f"↩️ {i}단계: {pick['pose']} → {place['pose']}")
+        grip_and_place(pick, place)
+    print("✅ 복구 완료")
 
 
+# ====== 메인 루프 ======
 def main():
     box_dict = {}
-    while rclpy.ok():
-        print("choose target")
-        print("==========")
-        print("new : add new box")
-        print("delete : delete box")
-        print("grip : go to grip positoin and grip something")
-        print("=====")
-        for box in box_dict.values():
-            print(box.info())
-        user_input = input(">> ")
-        print()
 
-        if user_input == "new":
-            print("input box id")
-            box_id = input(">> ")
-            print()
-            print("input position id")
-            position_id = input(">> ")
-            print()
-            print("input target position(tool position)")
-            print("ex) [628.0, 9.3, 232.0, 4.9, -179.16, 5.0]")
-            target_position = input(">> ")
-            print()
-            box_dict[box_id] = Box(box_id, position_id, eval(target_position))
-            print("box is saved!")
-        elif user_input == "delete":
-            print("input box id")
-            box_id = input(">> ")
-            print()
-            if box_id not in box_dict.keys():
-                print("id is not matched : ", box_id)
+    while rclpy.ok():
+        print("\n====== Box Manager ======")
+        print("1. 박스 등록")
+        print("2. 박스 목록 보기")
+        print("3. 박스 작업 실행 (그립 후 릴리즈)")
+        print("4. 박스 삭제 및 역복구 수행")
+        print("5. 종료")
+        print("==========================")
+        cmd = input(">> ")
+
+        if cmd == "1":
+            box_id = input("📦 Box ID >> ")
+            position_id = input("🪧 Position ID >> ")
+            print("📍 이동 명령 입력 (예: [{'type': 'movej', 'pose': [...]}, {'type': 'movel', 'pose': [...]}])")
+            target_commands = input(">> ").strip().replace('\n', '')
+            try:
+                target_commands = eval(target_commands)
+                assert isinstance(target_commands, list)
+                for cmd in target_commands:
+                    assert isinstance(cmd, dict)
+                    assert "type" in cmd and cmd["type"] in ["movej", "movel"]
+                    assert "pose" in cmd and isinstance(cmd["pose"], list)
+            except Exception:
+                print("❌ 올바른 포맷이 아닙니다.")
                 continue
-            print(f"do you want to delete {box_id}?")
-            print("1 : continue\n2 : cancel")
-            answer = input(">> ")
-            print()
-            if answer == "2":
-                print("delete is canceled")
+            box_dict[box_id] = Box(box_id, position_id, target_commands)
+            print("✅ 박스 등록 완료")
+
+        elif cmd == "2":
+            if not box_dict:
+                print("❌ 등록된 박스가 없습니다.")
                 continue
+            for box in box_dict.values():
+                print(box.info())
+
+        elif cmd == "3":
+            box_id = input("실행할 박스 ID >> ")
+            if box_id not in box_dict:
+                print("❌ 해당 박스가 없습니다.")
+                continue
+            box = box_dict[box_id]
+            if len(box.target_commands) < 2:
+                print("❌ 최소 2개의 위치가 필요합니다.")
+                continue
+         #   grip_and_place(box.target_commands[0], box.target_commands[1])
+            for i, cmd in enumerate(box.target_commands):
+                print(f"🔁 [{i+1}/{len(box.target_commands)}] 명령 실행")
+                move_to_pose(cmd)
+
+        elif cmd == "4":
+            box_id = input("삭제할 박스 ID >> ")
+            if box_id not in box_dict:
+                print("❌ 해당 박스가 없습니다.")
+                continue
+            box = box_dict[box_id]
+            restore_positions(box)
             box_dict.pop(box_id)
-            print(f"{box_id} is deleted")
-        elif user_input == "grip":
-            to_grip()
+            print(f"🗑️ {box_id} 삭제 완료")
+
+        elif cmd == "5":
+            print("🛑 종료합니다.")
+            break
+
         else:
-            if user_input not in box_dict.keys():
-                print("id is not matched : ", user_input)
-                continue
-            target = box_dict[user_input]
-            print("1 : stack")
-            print("2 : unstack")
-            user_input = input(">> ")
-            print()
-            if user_input == "1":
-                target.stack()
-            elif user_input == "2":
-                target.unstack()
-            else:
-                print("----- invalid option -----")
+            print("❌ 유효하지 않은 명령입니다.")
 
     rclpy.shutdown()
 
+
 if __name__ == "__main__":
     main()
+
+
+[{"type": "movej", "pose": [14.43, 36.23, 29.37, -1.31, 112.99, 15.95]},{"type": "movej", "pose": [21.26, -1.16, 67.83, 1.68, 113.96, 21.68]},{"type": "movel", "pose": [566.35, 145.44, 224.06, 156.38, -178.23, -171.65]}]
